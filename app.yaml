@@ -1,0 +1,8 @@
+# Databricks Apps entry point. Not yet deployed to a real workspace: treat as a starting point.
+# Build the frontend first (cd web && npm run build) so web/dist is uploaded with the app.
+command: ["uvicorn", "strand.server:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: PYTHONPATH
+    value: src
+  - name: STRAND_PIPELINES_DIR
+    value: pipelines

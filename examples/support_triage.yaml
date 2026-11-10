@@ -1,0 +1,82 @@
+name: support_triage
+description: Classify last week's tickets, let an agent decide whether to escalate, and ask a human before writing.
+settings:
+  catalog: main
+  staging_schema: strand_staging
+  checkpoint:
+    kind: postgres
+    dsn_secret: strand/checkpoint_dsn
+nodes:
+  - id: tickets
+    type: source
+    config: {table: main.support.tickets}
+    ui: {x: 0, y: 0}
+  - id: customers
+    type: source
+    config: {table: main.support.customers}
+    ui: {x: 0, y: 170}
+  - id: recent
+    type: filter
+    config: {condition: "created_at >= date_sub(current_date(), 7)"}
+    ui: {x: 240, y: 0}
+  - id: enriched
+    type: join
+    config: {"on": [customer_id], how: left}
+    ui: {x: 480, y: 80}
+  - id: classified
+    type: llm_map
+    config:
+      endpoint: databricks-claude-sonnet-4
+      prompt: "Is this support ticket urgent? Answer with one word, high or low.\n\nPlan: {plan}\nTicket: {body}"
+      output_column: urgency
+    ui: {x: 720, y: 80}
+  - id: summary
+    type: sql
+    config:
+      query: "SELECT urgency, plan, count(*) AS tickets FROM {classified} GROUP BY urgency, plan"
+    ui: {x: 960, y: 0}
+  - id: triage
+    type: agent
+    label: Decide whether to escalate
+    config:
+      endpoint: databricks-claude-sonnet-4
+      instructions: >-
+        Look at this week's ticket summary. Escalate if urgent tickets from enterprise
+        customers are clearly above normal; otherwise ignore.
+      uc_functions: [main.support.weekly_baseline]
+      choices: [escalate, ignore]
+    ui: {x: 240, y: 330}
+  - id: decide
+    type: router
+    config: {expr: "outputs['triage']['choice'] or 'ignore'"}
+    ui: {x: 480, y: 330}
+  - id: approve
+    type: approval
+    config: {message: "The agent wants to escalate this week's urgent tickets. Approve?"}
+    ui: {x: 720, y: 300}
+  - id: urgent
+    type: filter
+    config: {condition: "lower(urgency) = 'high'"}
+    ui: {x: 980, y: 330}
+  - id: save_escalations
+    type: sink
+    config: {table: main.support.escalations, mode: append}
+    ui: {x: 1220, y: 330}
+  - id: save_summary
+    type: sink
+    config: {table: main.support.weekly_summary, mode: overwrite}
+    ui: {x: 720, y: 470}
+edges:
+  - {from: tickets, to: recent}
+  - {from: recent, to: enriched, port: left}
+  - {from: customers, to: enriched, port: right}
+  - {from: enriched, to: classified}
+  - {from: classified, to: summary}
+  - {from: summary, to: triage}
+  - {from: triage, to: decide}
+  - {from: decide, to: approve, label: escalate}
+  - {from: decide, to: save_summary, label: ignore}
+  - {from: summary, to: save_summary}
+  - {from: approve, to: urgent, label: approved}
+  - {from: classified, to: urgent}
+  - {from: urgent, to: save_escalations}
