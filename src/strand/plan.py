@@ -11,9 +11,21 @@ one-to-one onto the generated LangGraph.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .spec import Pipeline
+
+PARAM_RE = re.compile(r"(?<![:\w]):([A-Za-z_]\w*)")
+
+
+def sql_params(query: str) -> list[str]:
+    """Named parameter markers (:name) in a SQL query, in order of first use."""
+    out: list[str] = []
+    for name in PARAM_RE.findall(re.sub(r"'(?:[^'\\]|\\.)*'", "''", query or "")):
+        if name not in out:
+            out.append(name)
+    return out
 
 
 @dataclass
@@ -27,6 +39,12 @@ class Unit:
     reads: list[str] = field(default_factory=list)
     # how incoming unconditional edges combine: "all" waits for every predecessor
     join: str = "all"
+    # region: the agent that may call this region as a tool (it is then not a scheduled step)
+    tool_of: str | None = None
+    description: str = ""
+    params: list[str] = field(default_factory=list)  # tool arguments (:name markers in its SQL)
+    # agent: regions it can call
+    tools: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict:
         return vars(self)
@@ -175,11 +193,21 @@ def build_plan(p: Pipeline) -> Plan:
             by_id[node_unit[n.id]].materialize[n.id] = f"sink to {n.config.get('table', '?')}"
 
     # ---- unit edges
+    plan_problems: list[tuple[str, str, str | None]] = []
     seen: set[UnitEdge] = set()
     edges: list[UnitEdge] = []
     for i, e in enumerate(p.edges):
         s, t = node_unit[e.source], node_unit[e.target]
         if s == t:
+            continue
+        if e.tool:
+            tool = by_id[t]
+            if tool.tool_of not in (None, s):
+                plan_problems.append(("error", f"'{t}' is a tool of two agents ({tool.tool_of}, {s}). Give each agent its own steps.", e.target))
+            tool.tool_of = s
+            tool.description = tool.description or (e.description or "")
+            if t not in by_id[s].tools:
+                by_id[s].tools.append(t)
             continue
         nt = p.node(e.source).node_type
         label = e.label if (nt.free_branches or nt.branches) else None
@@ -188,9 +216,7 @@ def build_plan(p: Pipeline) -> Plan:
             seen.add(ue)
             edges.append(ue)
 
-    # ---- transitive reduction of unconditional edges (a data dependency that is
-    #      already implied by a longer path must not trigger the target early)
-    def reachable(src: str, dst: str, skip: UnitEdge) -> bool:
+    def reachable(src: str, dst: str, skip: UnitEdge | None = None) -> bool:
         stack, visited = [src], set()
         while stack:
             n = stack.pop()
@@ -203,11 +229,46 @@ def build_plan(p: Pipeline) -> Plan:
                 stack.append(e.target)
         return False
 
+    # ---- regions that an agent calls as a tool are taken out of the schedule
+    for tool in [u for u in units if u.tool_of]:
+        agent = tool.tool_of
+        for nid in tool.nodes:
+            n = p.node(nid)
+            if n.type == "sql":
+                tool.params += [x for x in sql_params(n.get("query")) if x not in tool.params]
+            if n.type != "sink" and not p.outgoing(nid):
+                tool.materialize.setdefault(nid, f"returned to agent '{agent}'")
+            for e in p.incoming(nid):
+                if not e.tool and p.node(e.source).kind == "control":
+                    plan_problems.append(("error", f"'{nid}' is part of a tool of '{agent}', so it cannot also be "
+                                          f"triggered by '{e.source}'.", nid))
+        for e in [e for e in edges if e.source == tool.id]:
+            plan_problems.append(("error", f"'{e.target}' depends on '{tool.id}', which only runs if agent '{agent}' "
+                                  "decides to call it. Steps after a tool are not supported.", tool.nodes[-1]))
+            edges.remove(e)
+        for e in [e for e in edges if e.target == tool.id]:
+            edges.remove(e)
+            if reachable(agent, e.source):
+                plan_problems.append(("error", f"Tool '{tool.id}' reads from '{e.source}', which runs after agent "
+                                      f"'{agent}'.", tool.nodes[0]))
+            elif e.source != agent and not reachable(e.source, agent):
+                # whatever a tool reads must be ready before the agent starts
+                edges.append(UnitEdge(e.source, agent))
+
+    # ---- transitive reduction of unconditional edges (a data dependency that is
+    #      already implied by a longer path must not trigger the target early)
     for e in list(edges):
         if e.label is None and not e.back and reachable(e.source, e.target, e):
             edges.remove(e)
 
-    plan = Plan(units=units, edges=edges, node_unit=node_unit)
+    # a table source that another step reads is passed by reference; copying it would be waste
+    for u in units:
+        for nid, why in u.materialize.items():
+            n = p.node(nid)
+            if n.type == "source" and n.get("table"):
+                u.materialize[nid] = f"no copy, the source table is passed by reference: {why}"
+
+    plan = Plan(units=units, edges=edges, node_unit=node_unit, problems=plan_problems)
 
     # ---- how fan-in combines: exclusive router branches merge with "any",
     #      independent predecessors with "all"

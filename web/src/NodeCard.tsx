@@ -9,6 +9,8 @@ const SUMMARY: Record<string, string[]> = {
   python: ['code'],
   join: ['on'],
   llm_map: ['prompt'],
+  ai_task: ['function'],
+  embed: ['column'],
   sink: ['table'],
   agent: ['instructions'],
   router: ['expr'],
@@ -68,9 +70,10 @@ export function NodeCard({ id, data, selected }: NodeProps<SNode>) {
       <div className="node-id">{data.label || id}</div>
       {data.label && <div className="node-sub">{id}</div>}
       {summary != null && <div className="node-summary">{Array.isArray(summary) ? summary.join(', ') : String(summary)}</div>}
+      {region?.tool_of && <div className="toolof">tool of {region.tool_of}</div>}
       {written && (
         <div className="written" title={written}>
-          ▣ written to a table
+          {written.startsWith('no copy') ? '↗ passed by reference' : '▣ written to a table'}
         </div>
       )}
 
@@ -91,6 +94,12 @@ export function NodeCard({ id, data, selected }: NodeProps<SNode>) {
         ))
       ) : (
         <Handle id="out" type="source" position={Position.Right} className={dataflow ? 'h-data' : 'h-ctl'} />
+      )}
+      {data.type === 'agent' && (
+        <>
+          <span className="tool-port">tools</span>
+          <Handle id="tool" type="source" position={Position.Bottom} className="h-tool" title="Connect to a Spark node the agent may run as a tool" />
+        </>
       )}
     </div>
   )

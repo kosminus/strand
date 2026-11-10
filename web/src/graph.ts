@@ -4,7 +4,7 @@ import type { Issue, NodeTypeDef, PipelineJson, Plan } from './api'
 
 export type NData = { type: string; label?: string; config: Record<string, unknown> }
 export type SNode = Node<NData>
-export type SEdge = Edge<{ label?: string }>
+export type SEdge = Edge<{ label?: string; description?: string }>
 export type Defs = Record<string, NodeTypeDef>
 export type Meta = Pick<PipelineJson, 'name' | 'description' | 'settings'>
 
@@ -43,6 +43,10 @@ export function toPipeline(meta: Meta, nodes: SNode[], edges: SEdge[], defs: Def
         if (sd?.kind === 'dataflow' && td?.kind === 'dataflow' && td.inputs.length > 1 && e.targetHandle) out.port = e.targetHandle
         if (sd?.branches.length) out.label = e.sourceHandle ?? ''
         else if (sd?.free_branches) out.label = e.data?.label ?? ''
+        if (e.sourceHandle === 'tool') {
+          out.tool = true
+          if (e.data?.description) out.description = e.data.description
+        }
         return out
       }),
   }
@@ -66,9 +70,9 @@ export function fromPipeline(p: PipelineJson, defs: Defs): { meta: Meta; nodes: 
         id: `e${i}_${e.source}_${e.target}`,
         source: e.source,
         target: e.target,
-        sourceHandle: sd?.branches.length ? (e.label ?? sd.branches[0]) : 'out',
+        sourceHandle: e.tool ? 'tool' : sd?.branches.length ? (e.label ?? sd.branches[0]) : 'out',
         targetHandle,
-        data: sd?.free_branches ? { label: e.label ?? '' } : {},
+        data: e.tool ? { description: e.description ?? '' } : sd?.free_branches ? { label: e.label ?? '' } : {},
       }
     }),
   }

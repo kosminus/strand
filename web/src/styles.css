@@ -79,6 +79,7 @@ header {
 .legend p { line-height: 1.4; margin: 6px 0; }
 .line { display: inline-block; width: 22px; vertical-align: middle; margin-right: 4px; border-top: 2px solid var(--data); }
 .line.control { border-top: 2px dashed var(--control); }
+.line.tool { border-top: 2px dotted var(--warn); }
 
 main { grid-area: main; position: relative; min-height: 0; }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
@@ -168,3 +169,9 @@ th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--lin
 th { position: sticky; top: 0; background: var(--surface); }
 .approval { display: flex; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-top: 8px; max-width: 640px; }
 .approval > div { flex: 1; }
+
+.h-tool { background: var(--warn); border-radius: 2px; }
+.react-flow__handle.h-tool { left: 70%; }
+.tool-port { position: absolute; bottom: -15px; left: 70%; transform: translateX(8px); font-size: 9.5px; color: var(--warn); font-weight: 600; }
+.toolof { margin-top: 4px; font-size: 11px; color: var(--warn); font-weight: 600; }
+.react-flow__edge.edge-tool .react-flow__edge-path { stroke: var(--warn); stroke-width: 1.8; stroke-dasharray: 2 4; }

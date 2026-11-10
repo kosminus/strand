@@ -29,6 +29,10 @@ export type Unit = {
   materialize: Record<string, string>
   reads: string[]
   join: string
+  tool_of: string | null
+  description: string
+  params: string[]
+  tools: string[]
 }
 
 export type Plan = {
@@ -48,7 +52,7 @@ export type PipelineJson = {
     checkpoint: { kind: string; dsn_secret?: string | null; path?: string | null }
   }
   nodes: { id: string; type: string; label?: string; config: Record<string, unknown>; ui?: { x: number; y: number } }[]
-  edges: { source: string; target: string; port?: string; label?: string }[]
+  edges: { source: string; target: string; port?: string; label?: string; tool?: boolean; description?: string }[]
 }
 
 export type CheckResult = { issues: Issue[]; plan: Plan | null }

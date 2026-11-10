@@ -110,8 +110,10 @@ class FakeSpark:
         self.tables, self.writes, self.reads, self.txns = {}, [], [], set()
         self.read, self.catalog = _Reader(self), _Catalog(self)
 
-    def sql(self, query, **kwargs):
+    def sql(self, query, args=None, **kwargs):
         ins = ", ".join(f"{k}={v.lineage}" for k, v in kwargs.items())
+        if args:
+            ins = f"args[{', '.join(args)}] " + ins
         return FakeDF(self, f"sql({query}{' | ' + ins if ins else ''})")
 
     def createDataFrame(self, rows, schema=None):

@@ -62,6 +62,20 @@ def validate(p: Pipeline) -> tuple[list[Issue], Plan | None]:
     if any(i.level == "error" for i in issues):
         return issues, None
 
+    # nodes an agent can run as a tool: their results go back to the agent
+    in_tool: set[str] = set()
+    for e in p.edges:
+        if not e.tool:
+            continue
+        if p.node(e.source).type != "agent" or p.node(e.target).kind != "dataflow":
+            err("A tool connection goes from an agent to a Spark node.", e.source)
+        stack = [e.target]
+        while stack:
+            x = stack.pop()
+            if x not in in_tool:
+                in_tool.add(x)
+                stack += [o.target for o in p.outgoing(x) if p.node(o.target).kind == "dataflow"]
+
     for n in p.nodes:
         t = n.node_type
         data_in = p.data_inputs(n.id)
@@ -84,7 +98,7 @@ def validate(p: Pipeline) -> tuple[list[Issue], Plan | None]:
                     err(f"{t.label} is missing its '{port.name}' input.", n.id)
                 if port.max is not None and c > port.max:
                     err(f"{t.label} takes one '{port.name}' input, found {c}.", n.id)
-            if n.type != "sink" and not p.outgoing(n.id):
+            if n.type != "sink" and not p.outgoing(n.id) and n.id not in in_tool:
                 warn("Output is not used by anything.", n.id)
 
         out = p.outgoing(n.id)
@@ -138,7 +152,18 @@ def _check_config(n, err, warn) -> None:
     elif n.type == "llm_map":
         if c("prompt") and not re.search(r"\{\w+\}", c("prompt")):
             warn("The prompt uses no {column}; every row will get the same prompt.", n.id)
+        if c("output_schema") and not re.match(r"^\s*\w+\s+\w", c("output_schema")):
+            err("Structured output must look like: name TYPE, other TYPE.", n.id)
+    elif n.type == "ai_task":
+        fn = c("function")
+        if fn in ("classify", "extract", "mask") and not c("labels"):
+            err(f"AI function '{fn}' needs labels.", n.id)
+        if fn == "translate" and not c("language"):
+            err("AI function 'translate' needs a target language.", n.id)
     elif n.type == "agent":
+        for url in c("mcp_servers") or []:
+            if not re.match(r"^https?://", url):
+                err(f"'{url}' is not an MCP server URL.", n.id)
         if c("include_sample"):
             warn("Sample rows will be sent to the model and stored in checkpoints and traces.", n.id)
 

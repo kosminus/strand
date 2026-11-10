@@ -79,7 +79,7 @@ type Props = {
   setMeta: (m: Meta) => void
   patchNode: (id: string, patch: Partial<SNode['data']>) => void
   renameNode: (from: string, to: string) => string | null
-  patchEdge: (id: string, label: string) => void
+  patchEdge: (id: string, patch: { label?: string; description?: string }) => void
   remove: () => void
   onPreview: (id: string) => void
 }
@@ -134,13 +134,20 @@ export function Inspector({ node, edge, meta, nodes, setMeta, patchNode, renameN
           {edge.source} → {edge.target}
         </p>
         <p className="muted">
-          {sd?.kind === 'dataflow'
+          {edge.sourceHandle === 'tool'
+            ? 'Tool: the agent may run the Spark steps starting here, as often as it needs. They do not run unless it calls them. Use :name in their SQL to give the tool arguments.'
+            : sd?.kind === 'dataflow'
             ? 'Carries data. If the two ends run in different steps, the data is written to a table and passed by reference.'
             : 'Controls order only: the target runs after the source.'}
         </p>
         {sd?.free_branches && (
           <Row label="Branch label" required help="The router's expression must evaluate to this value to take this branch.">
-            <input autoFocus className="mono" value={edge.data?.label ?? ''} onChange={(e) => patchEdge(edge.id, e.target.value)} />
+            <input autoFocus className="mono" value={edge.data?.label ?? ''} onChange={(e) => patchEdge(edge.id, { label: e.target.value })} />
+          </Row>
+        )}
+        {edge.sourceHandle === 'tool' && (
+          <Row label="Tool description" help="Tells the model what this tool does and when to use it.">
+            <textarea autoFocus rows={3} value={edge.data?.description ?? ''} onChange={(e) => patchEdge(edge.id, { description: e.target.value })} />
           </Row>
         )}
         {sd && sd.branches.length > 0 && <Row label="Branch">{<input disabled value={edge.sourceHandle ?? ''} />}</Row>}

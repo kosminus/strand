@@ -1,0 +1,75 @@
+name: order_investigation
+description: An agent investigates order anomalies. It can run a parameterised Spark step as a tool and call MCP tools.
+settings:
+  catalog: main
+  staging_schema: strand_staging
+  checkpoint:
+    kind: postgres
+    dsn_secret: strand/checkpoint_dsn
+nodes:
+  - id: orders
+    type: source
+    config: {table: main.sales.orders}
+    ui: {x: 0, y: 0}
+  - id: reviews
+    type: source
+    config: {table: main.sales.reviews}
+    ui: {x: 0, y: 330}
+  - id: daily
+    type: sql
+    config:
+      query: "SELECT region, order_date, count(*) AS orders, sum(amount) AS revenue FROM {orders} GROUP BY region, order_date"
+    ui: {x: 250, y: 0}
+  - id: analyst
+    type: agent
+    label: Investigate anomalies
+    config:
+      endpoint: databricks-claude-sonnet-4
+      instructions: >-
+        Find regions whose daily revenue dropped sharply in the last two weeks. For each one,
+        pull its orders and reviews with your tools and explain the most likely cause.
+      mcp_servers: ["https://your-workspace.cloud.databricks.com/api/2.0/mcp/functions/main/sales"]
+      choices: [report, nothing_found]
+    ui: {x: 520, y: 0}
+  - id: orders_for_region
+    type: sql
+    config:
+      query: "SELECT * FROM {orders} WHERE region = :region AND order_date >= :since::date"
+    ui: {x: 520, y: 200}
+  - id: sentiment
+    type: ai_task
+    config: {function: sentiment, column: review_text, output_column: sentiment}
+    ui: {x: 250, y: 330}
+  - id: reviews_for_region
+    type: sql
+    config:
+      query: "SELECT sentiment, count(*) AS reviews FROM {sentiment} WHERE region = :region GROUP BY sentiment"
+    ui: {x: 520, y: 330}
+  - id: decide
+    type: router
+    config: {expr: "outputs['analyst']['choice'] or 'nothing_found'"}
+    ui: {x: 800, y: 0}
+  - id: findings
+    type: llm_map
+    config:
+      endpoint: databricks-claude-sonnet-4
+      prompt: "Region {region} had {orders} orders and {revenue} revenue on {order_date}. Describe the anomaly, if any."
+      output_column: finding
+      output_schema: "is_anomaly BOOLEAN, severity STRING, explanation STRING"
+    ui: {x: 1060, y: 0}
+  - id: save_findings
+    type: sink
+    config: {table: main.sales.anomaly_findings, mode: overwrite}
+    ui: {x: 1320, y: 0}
+edges:
+  - {from: orders, to: daily}
+  - {from: daily, to: analyst}
+  - {from: analyst, to: orders_for_region, tool: true, description: "Orders of one region since a date (YYYY-MM-DD)."}
+  - {from: orders, to: orders_for_region}
+  - {from: reviews, to: sentiment}
+  - {from: analyst, to: reviews_for_region, tool: true, description: "Customer review sentiment counts for one region."}
+  - {from: sentiment, to: reviews_for_region}
+  - {from: analyst, to: decide}
+  - {from: decide, to: findings, label: report}
+  - {from: daily, to: findings}
+  - {from: findings, to: save_findings}

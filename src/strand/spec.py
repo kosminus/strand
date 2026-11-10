@@ -121,6 +121,30 @@ NODE_TYPES: dict[str, NodeType] = {
                 F("prompt", "Prompt", "textarea", required=True,
                   help="Use {column} to insert a column value. Example: Classify this ticket: {body}"),
                 F("output_column", "Output column", required=True, default="llm_output"),
+                F("output_schema", "Structured output", help="Optional. Typed fields the model must return, "
+                  "for example: urgency STRING, reason STRING. The output column then becomes a struct."),
+            ),
+            inputs=(Port("in"),),
+        ),
+        NodeType(
+            "ai_task", "dataflow", "AI function", "A built-in Databricks AI function applied to one column.",
+            (
+                F("function", "Function", "select", default="classify",
+                  options=("classify", "extract", "summarize", "sentiment", "translate", "fix_grammar", "mask")),
+                F("column", "Input column", required=True),
+                F("labels", "Labels", "list", help="Classes for classify; entity names for extract and mask."),
+                F("language", "Target language", help="For translate, for example: es"),
+                F("max_words", "Max words", "number", help="For summarize."),
+                F("output_column", "Output column", required=True, default="ai_output"),
+            ),
+            inputs=(Port("in"),),
+        ),
+        NodeType(
+            "embed", "dataflow", "Embed", "Compute an embedding vector for a text column.",
+            (
+                F("endpoint", "Embedding endpoint", required=True, default="databricks-gte-large-en"),
+                F("column", "Text column", required=True),
+                F("output_column", "Output column", required=True, default="embedding"),
             ),
             inputs=(Port("in"),),
         ),
@@ -134,7 +158,8 @@ NODE_TYPES: dict[str, NodeType] = {
             inputs=(Port("in"),),
         ),
         NodeType(
-            "agent", "control", "Agent", "An LLM agent that loops over tools. Sees dataset references, not rows.",
+            "agent", "control", "Agent", "An LLM agent that loops over tools. Sees dataset references, not rows. "
+            "Connect its tool handle to a Spark node to let it run that part of the pipeline.",
             (
                 F("endpoint", "Serving endpoint", required=True, default="databricks-claude-sonnet-4"),
                 F("system_prompt", "System prompt", "textarea", default="You are a careful data operations agent."),
@@ -142,6 +167,8 @@ NODE_TYPES: dict[str, NodeType] = {
                   help="What the agent should do. Connected datasets are summarised for it automatically."),
                 F("uc_functions", "Unity Catalog functions", "list", help="catalog.schema.function, used as tools."),
                 F("vector_indexes", "Vector Search indexes", "list", help="catalog.schema.index, used as retrievers."),
+                F("mcp_servers", "MCP servers", "list",
+                  help="MCP server URLs. Databricks-managed servers in this workspace are authenticated automatically."),
                 F("choices", "Decision choices", "list",
                   help="If set, the agent must end with one of these. Route on outputs['<id>']['choice']."),
                 F("include_sample", "Show sample rows to the model", "bool", default=False,
@@ -214,6 +241,10 @@ class Edge(BaseModel):
     target: str = Field(validation_alias=AliasChoices("target", "to"))
     port: str | None = None  # target input port (join: left / right)
     label: str | None = None  # branch label when the source is a router or approval
+    # agent -> Spark node: the region starting there is a tool the agent may call,
+    # instead of a step that always runs after it
+    tool: bool = False
+    description: str | None = None  # what the tool does, shown to the model
 
 
 class Checkpoint(BaseModel):
@@ -267,4 +298,7 @@ def load(text: str) -> Pipeline:
 
 def dump(p: Pipeline) -> str:
     data = p.model_dump(exclude_none=True, exclude_defaults=False)
+    for e in data["edges"]:
+        if not e.get("tool"):
+            e.pop("tool", None)
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100)

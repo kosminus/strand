@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
             if u.kind == "region":
                 print(f"{u.id}  [Spark]  {' -> '.join(u.nodes)}")
                 for n, why in u.materialize.items():
-                    print(f"    writes {n}: {why}")
+                    print(f"    {n}: {why}" if why.startswith("no copy") else f"    writes {n}: {why}")
             else:
                 print(f"{u.id}  [{p.node(u.id).type}]")
         for e in plan.edges:

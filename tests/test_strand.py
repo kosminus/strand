@@ -41,9 +41,10 @@ def model_saying(*answers):
 
 
 def run(wf, spark, saver, answers=(), **kw):
+    model = kw.pop("chat_model", None) or model_saying(*answers)
     return rt.run(
         wf.build_graph, pipeline=wf.PIPELINE, settings={**wf.SETTINGS, "checkpoint": {"kind": "memory"}},
-        spark=spark, checkpointer=saver, chat_model=model_saying(*answers), tools=lambda a, b: [], **kw,
+        spark=spark, checkpointer=saver, chat_model=model, tools=kw.pop("tools", lambda uc, vs, mcp: []), **kw,
     )
 
 
@@ -210,3 +211,122 @@ def test_runtime_refuses_to_resume_a_run_that_is_not_waiting(tmp_path):
     wf, _ = build(load(EXAMPLE.read_text()), tmp_path)
     with pytest.raises(RuntimeError, match="not waiting"):
         run(wf, FakeSpark(), InMemorySaver(), thread_id="nope", resume={"approved": True})
+
+
+# ------------------------------------------------------------------ AI nodes and tools
+
+AI_NODES = """
+name: ai_nodes
+nodes:
+  - {id: docs, type: source, config: {table: m.s.docs}}
+  - id: tagged
+    type: llm_map
+    config: {endpoint: ep, prompt: "Tag: {body}", output_column: tags, output_schema: "topic STRING, entities ARRAY<STRING>"}
+  - {id: kind, type: ai_task, config: {function: classify, column: body, labels: [bug, question], output_column: kind}}
+  - {id: short, type: ai_task, config: {function: summarize, column: body, max_words: 20, output_column: short}}
+  - {id: vec, type: embed, config: {endpoint: databricks-gte-large-en, column: body}}
+  - {id: save, type: sink, config: {table: m.s.docs_ai}}
+edges:
+  - {from: docs, to: tagged}
+  - {from: tagged, to: kind}
+  - {from: kind, to: short}
+  - {from: short, to: vec}
+  - {from: vec, to: save}
+"""
+
+
+def test_ai_nodes_generate_the_expected_sql(tmp_path):
+    wf, _ = build(load(AI_NODES), tmp_path)
+    spark = FakeSpark()
+    run(wf, spark, InMemorySaver(), thread_id="t")
+    lineage = spark.user_writes()[0][3]
+    assert ("from_json(ai_query('ep', concat('Tag: ', CAST(`body` AS STRING)), responseFormat => "
+            "'STRUCT<result: STRUCT<topic: STRING, entities: ARRAY<STRING>>>'), "
+            "'topic STRING, entities ARRAY<STRING>') AS `tags`") in lineage
+    assert "ai_classify(`body`, array('bug', 'question')) AS `kind`" in lineage
+    assert "ai_summarize(`body`, 20) AS `short`" in lineage
+    assert "ai_query('databricks-gte-large-en', CAST(`body` AS STRING)) AS `embedding`" in lineage
+    assert any("needs labels" in e for e in errors("""
+name: p
+nodes:
+  - {id: a, type: source, config: {table: m.s.a}}
+  - {id: b, type: ai_task, config: {function: extract, column: x}}
+  - {id: c, type: sink, config: {table: m.s.c}}
+edges: [{from: a, to: b}, {from: b, to: c}]
+"""))
+
+
+TOOLS = """
+name: with_tools
+nodes:
+  - {id: orders, type: source, config: {table: m.s.orders}}
+  - {id: lookup, type: source, config: {table: m.s.regions}}
+  - {id: stats, type: sql, config: {query: "SELECT count(*) AS n FROM {orders}"}}
+  - id: analyst
+    type: agent
+    config: {endpoint: e, instructions: Investigate, mcp_servers: ["https://example.test/api/2.0/mcp/functions/m/s"]}
+  - {id: by_region, type: sql, config: {query: "SELECT * FROM {orders} JOIN {lookup} USING (region) WHERE region = :region AND day >= :since::date"}}
+  - {id: flagged, type: sink, config: {table: m.s.flagged, mode: append}}
+  - {id: report, type: sink, config: {table: m.s.report}}
+edges:
+  - {from: orders, to: stats}
+  - {from: stats, to: analyst}
+  - {from: analyst, to: by_region, tool: true, description: Orders for one region since a date.}
+  - {from: orders, to: by_region}
+  - {from: lookup, to: by_region}
+  - {from: by_region, to: flagged}
+  - {from: analyst, to: report}
+  - {from: stats, to: report}
+"""
+
+
+class ToolCallingModel(GenericFakeChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+
+def test_agent_can_run_part_of_the_pipeline_as_a_tool(tmp_path):
+    from langchain_core.tools import StructuredTool
+
+    wf, plan = build(load(TOOLS), tmp_path)
+    tool = plan.unit("region_flagged")
+    assert (tool.tool_of, tool.params) == ("analyst", ["region", "since"])
+    assert plan.unit("analyst").tools == ["region_flagged"]
+    # a tool is not a scheduled step, and what it reads is prepared before the agent starts
+    assert "region_flagged" not in {e.source for e in plan.edges} | {e.target for e in plan.edges}
+    assert ("region_lookup", "analyst") in {(e.source, e.target) for e in plan.edges}
+    src = (tmp_path / "src/with_tools/workflow.py").read_text()
+    assert 'g.add_node("region_flagged"' not in src and "rt.PipelineTool(\"run_flagged\"" in src
+
+    seen = {}
+
+    async def remote(q: str) -> str:
+        return "ok"
+
+    def tools(uc, vs, mcp):
+        seen["mcp"] = mcp
+        return [StructuredTool.from_function(coroutine=remote, name="remote", description="An MCP tool.")]
+
+    call = {"name": "run_flagged", "args": {"region": "emea'; DROP TABLE x; --", "since": "2026-01-01"}, "id": "c1"}
+    model = lambda endpoint: ToolCallingModel(messages=iter([  # noqa: E731
+        AIMessage(content="", tool_calls=[call]),
+        AIMessage(content="", tool_calls=[{**call, "id": "c2"}]),
+        AIMessage(content="Flagged."),
+    ]))
+    spark = FakeSpark()
+    done = run(wf, spark, InMemorySaver(), thread_id="t", chat_model=model, tools=tools)
+
+    assert seen["mcp"] == ["https://example.test/api/2.0/mcp/functions/m/s"]
+    assert done["outputs"]["analyst"]["tool_calls"] == ["run_flagged", "run_flagged"]
+    assert done["datasets"]["flagged"]["table"] == "m.s.flagged"
+    appends = [w for w in spark.user_writes() if w[0] == "m.s.flagged"]
+    assert [w[2]["txnVersion"] for w in appends] == ["1", "2"]  # two calls, two appends
+    # the model's argument is bound as a parameter, not pasted into the SQL text
+    assert "DROP TABLE" not in appends[0][3] and "args[region, since]" in appends[0][3]
+    assert [w[0] for w in spark.user_writes()][-1] == "m.s.report"  # the normal step after the agent still ran
+
+
+def test_a_tool_cannot_also_be_a_normal_step():
+    # `report` would be both part of the tool (it reads by_region) and a step after the agent
+    assert any("cannot also be triggered by 'analyst'" in e for e in errors(TOOLS.replace(
+        "  - {from: stats, to: report}", "  - {from: by_region, to: report}")))

@@ -55,7 +55,11 @@ export function Panel({ tab, setTab, compiled, preview, approvals, loadApprovals
                     <div>
                       <strong className="mono">{u.id}</strong>{' '}
                       <span className="muted">
-                        {u.kind === 'region' ? 'one Spark plan' : 'runs on the driver'}
+                        {u.tool_of
+                          ? `tool of ${u.tool_of}${u.params.length ? ` (${u.params.join(', ')})` : ''}`
+                          : u.kind === 'region'
+                            ? 'one Spark plan'
+                            : 'runs on the driver'}
                       </span>
                       {u.kind === 'region' && (
                         <div className="chain">
@@ -69,7 +73,7 @@ export function Panel({ tab, setTab, compiled, preview, approvals, loadApprovals
                       )}
                       {Object.entries(u.materialize).map(([n, why]) => (
                         <div key={n} className="muted small">
-                          ▣ writes <span className="mono">{n}</span>: {why}
+                          {why.startsWith('no copy') ? '↗' : '▣ writes'} <span className="mono">{n}</span>: {why}
                         </div>
                       ))}
                       {outgoing.length > 0 && (

@@ -14,27 +14,27 @@ nodes:
   - id: customers
     type: source
     config: {table: main.support.customers}
-    ui: {x: 0, y: 170}
+    ui: {x: 0, y: 150}
   - id: recent
     type: filter
     config: {condition: "created_at >= date_sub(current_date(), 7)"}
-    ui: {x: 240, y: 0}
+    ui: {x: 215, y: 0}
   - id: enriched
     type: join
     config: {"on": [customer_id], how: left}
-    ui: {x: 480, y: 80}
+    ui: {x: 430, y: 70}
   - id: classified
     type: llm_map
     config:
       endpoint: databricks-claude-sonnet-4
       prompt: "Is this support ticket urgent? Answer with one word, high or low.\n\nPlan: {plan}\nTicket: {body}"
       output_column: urgency
-    ui: {x: 720, y: 80}
+    ui: {x: 645, y: 70}
   - id: summary
     type: sql
     config:
       query: "SELECT urgency, plan, count(*) AS tickets FROM {classified} GROUP BY urgency, plan"
-    ui: {x: 960, y: 0}
+    ui: {x: 860, y: -50}
   - id: triage
     type: agent
     label: Decide whether to escalate
@@ -45,27 +45,27 @@ nodes:
         customers are clearly above normal; otherwise ignore.
       uc_functions: [main.support.weekly_baseline]
       choices: [escalate, ignore]
-    ui: {x: 240, y: 330}
+    ui: {x: 1075, y: -50}
   - id: decide
     type: router
     config: {expr: "outputs['triage']['choice'] or 'ignore'"}
-    ui: {x: 480, y: 330}
+    ui: {x: 1290, y: -50}
   - id: approve
     type: approval
     config: {message: "The agent wants to escalate this week's urgent tickets. Approve?"}
-    ui: {x: 720, y: 300}
+    ui: {x: 1505, y: -80}
   - id: urgent
     type: filter
     config: {condition: "lower(urgency) = 'high'"}
-    ui: {x: 980, y: 330}
+    ui: {x: 1760, y: 240}
   - id: save_escalations
     type: sink
     config: {table: main.support.escalations, mode: append}
-    ui: {x: 1220, y: 330}
+    ui: {x: 1975, y: 240}
   - id: save_summary
     type: sink
     config: {table: main.support.weekly_summary, mode: overwrite}
-    ui: {x: 720, y: 470}
+    ui: {x: 1505, y: 80}
 edges:
   - {from: tickets, to: recent}
   - {from: recent, to: enriched, port: left}

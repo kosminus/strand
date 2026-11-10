@@ -70,7 +70,9 @@ function Editor() {
         setDefs(d)
         const names = await api.list()
         setSaved(names)
-        if (names.length) await open(names[0], d)
+        // ?pipeline=<name> opens that pipeline directly
+        const wanted = new URLSearchParams(location.search).get('pipeline')
+        if (names.length) await open(wanted && names.includes(wanted) ? wanted : names[0], d)
       } catch (e) {
         say(`Cannot reach the strand server: ${(e as Error).message}`, true)
       }
@@ -101,6 +103,7 @@ function Editor() {
       const sd = defs[s.data.type]
       const td = defs[t.data.type]
       if (edges.some((e) => e.source === c.source && e.target === c.target && e.sourceHandle === c.sourceHandle)) return false
+      if (c.sourceHandle === 'tool') return td.kind === 'dataflow' && c.targetHandle === 'after'
       if (td.kind === 'control') return true
       if (sd.kind === 'control') return c.targetHandle === 'after'
       // data into a Spark node: must land on a free data port
@@ -239,10 +242,11 @@ function Editor() {
     () =>
       edges.map((e) => {
         const control = kindOf(e.source) === 'control'
+        const tool = e.sourceHandle === 'tool'
         return {
           ...e,
-          label: e.data?.label,
-          className: control ? 'edge-control' : 'edge-data',
+          label: tool ? 'tool' : e.data?.label,
+          className: tool ? 'edge-tool' : control ? 'edge-control' : 'edge-data',
           markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
         }
       }),
@@ -325,6 +329,9 @@ function Editor() {
             <div>
               <i className="line control" /> order only
             </div>
+            <div>
+              <i className="line tool" /> agent tool
+            </div>
             <div>▣ written to a table</div>
             <p>Spark nodes that share a colour run as one Spark plan.</p>
           </div>
@@ -375,8 +382,8 @@ function Editor() {
           }}
           patchNode={patchNode}
           renameNode={renameNode}
-          patchEdge={(id, label) => {
-            setEdges((es) => es.map((e) => (e.id === id ? { ...e, data: { ...e.data, label } } : e)))
+          patchEdge={(id, patch) => {
+            setEdges((es) => es.map((e) => (e.id === id ? { ...e, data: { ...e.data, ...patch } } : e)))
             setDirty(true)
           }}
           remove={remove}

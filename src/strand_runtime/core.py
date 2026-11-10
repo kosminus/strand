@@ -37,7 +37,7 @@ class RunContext:
         run_id: str,
         settings: dict,
         chat_model: Callable[[str], Any] | None = None,
-        tools: Callable[[list[str], list[str]], list] | None = None,
+        tools: Callable[[list[str], list[str], list[str]], list] | None = None,
     ):
         self.spark = spark
         self.pipeline = pipeline
@@ -132,10 +132,10 @@ class RunContext:
 
         return ChatDatabricks(endpoint=endpoint)
 
-    def tools(self, uc_functions: list[str], vector_indexes: list[str]) -> list:
+    def tools(self, uc_functions: list[str], vector_indexes: list[str], mcp_servers: list[str] = ()) -> list:
         if self._tools:
-            return self._tools(uc_functions, vector_indexes)
-        tools: list = []
+            return self._tools(uc_functions, vector_indexes, list(mcp_servers))
+        tools: list = self._mcp_tools(list(mcp_servers)) if mcp_servers else []
         if uc_functions:
             from databricks_langchain import UCFunctionToolkit
 
@@ -149,6 +149,30 @@ class RunContext:
                 tool_description=f"Search the vector index {index}.",
             ))
         return tools
+
+    def _mcp_tools(self, urls: list[str]) -> list:
+        """Tools exposed by MCP servers. Servers in this workspace get the job's own credentials;
+        any other server is called without authentication."""
+        import asyncio
+        from urllib.parse import urlparse
+
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+        workspace, auth = None, {}
+        try:
+            from databricks.sdk import WorkspaceClient
+
+            cfg = WorkspaceClient().config
+            workspace, auth = urlparse(cfg.host).netloc, cfg.authenticate()
+        except Exception:
+            pass
+        servers = {}
+        for i, url in enumerate(urls):
+            server = {"url": url, "transport": "streamable_http"}
+            if workspace and urlparse(url).netloc == workspace:
+                server["headers"] = dict(auth)
+            servers[f"mcp_{i}"] = server
+        return asyncio.run(MultiServerMCPClient(servers).get_tools())
 
     # ------------------------------------------------------------------ audit log
     def log_event(self, kind: str, node_id: str, payload: Any) -> None:
